@@ -79,6 +79,11 @@ _STALL_S = 0.3
 _GRIPPER_SPEED = 0.05  # m/s
 # Finger targets closer than this (m) to the last one sent are not sent again.
 _GRIPPER_DEADBAND = 0.0005
+# A target this much (m, total opening) narrower than the Hand is a close, sent as a
+# force grasp; anything else, even fractionally narrower, is a move. A homed Hand
+# sits at ~80.1 mm, so a hold at 80.0 mm must not become a grasp: a grasp with
+# nothing between the fingers was seen to close them fully.
+_GRASP_MIN_CLOSE = 0.005
 
 
 class FrankaError(RuntimeError):
@@ -327,6 +332,7 @@ class FrankaConnection(ConnectionModule):
             if finger is not None and (
                 self._finger_sent is None or abs(finger - self._finger_sent) > _GRIPPER_DEADBAND
             ):
+                logger.info(f"FrankaConnection: finger target {finger * 1000:.1f} mm received")
                 with self._gripper_wake:
                     self._gripper_goal = 2.0 * finger  # both fingers move: width is twice one
                     self._gripper_wake.notify()
@@ -546,7 +552,13 @@ class FrankaConnection(ConnectionModule):
                     sent = goal
                     hand = gripper.read_once()
                     width = max(0.0, min(float(hand.max_width), goal))
-                    if width < float(hand.width):
+                    closing = width < float(hand.width) - _GRASP_MIN_CLOSE
+                    logger.info(
+                        f"FrankaConnection: Hand to {width * 1000:.1f} mm "
+                        f"({'grasp' if closing else 'move'}), "
+                        f"now {float(hand.width) * 1000:.1f} mm"
+                    )
+                    if closing:
                         # grasp() holds what is between the fingers with a force,
                         # where move() would fail once they are blocked. Epsilons
                         # of the full stroke accept any width it stops at.

@@ -527,3 +527,12 @@ def test_an_arm_standing_still_short_of_its_target_faults(
     r.move(fr3_joint1=0.05)
     wait_until(lambda: "not following" in str(r.module.status().last_error), timeout=2.0)
     assert "cancel_motion" in r.franka.names()
+
+
+def test_holding_a_homed_hand_open_moves_it_and_never_grasps(rig: Callable[..., Rig]) -> None:
+    r = rig()
+    # A Hand just homed in Desk reads a little past 80 mm.
+    r.franka.width = 0.0801
+    r.move(**{FR3_FINGER_JOINT: 0.04})
+    wait_until(lambda: bool(r.franka.sent("move")), timeout=2.0)
+    assert r.franka.sent("grasp") == []
