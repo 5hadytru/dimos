@@ -553,3 +553,29 @@ def test_a_dropped_hand_link_is_reopened_and_the_target_resent(rig: Callable[...
     r.franka.hand_down = False
     wait_until(lambda: bool(r.franka.sent("move")), timeout=3.0)
     assert r.franka.names().count("Gripper") >= 2
+
+
+def test_a_trajectory_may_run_ahead_of_the_arm_but_not_jump(rig: Callable[..., Rig]) -> None:
+    r = rig()
+    # The arm stays at REST while targets advance 0.05 rad a step: each is close
+    # to the one before, though they end up 0.3 rad ahead of the arm.
+    for k in range(1, 7):
+        r.move(fr3_joint2=REST[1] + 0.05 * k)
+    assert len(r.franka.targets()) == 7  # the hold, then all six
+    assert r.module.status().last_error is None
+    # A jump from the previous target is refused.
+    r.move(fr3_joint2=REST[1] + 0.6)
+    assert "from the previous target" in str(r.module.status().last_error)
+    # Refused, and the arm is told to hold where it is instead.
+    assert len(r.franka.targets()) == 8
+    assert r.franka.targets()[-1] == pytest.approx(REST)
+
+
+def test_a_target_far_from_the_arm_is_refused_even_in_small_steps(rig: Callable[..., Rig]) -> None:
+    r = rig()
+    k = 0
+    while "from where it is" not in str(r.module.status().last_error) and k < 40:
+        k += 1
+        r.move(fr3_joint2=REST[1] + 0.05 * k)
+    # 1.0 s at 25% of 2.62 rad/s is 0.655 rad: the 14th step (0.70 rad) is refused.
+    assert k == 14

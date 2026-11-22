@@ -104,9 +104,13 @@ class FrankaConfig(ConnectionConfig):
             planner may use, in (0, 1]. The default model's velocity limits are
             scaled by the same share, so plans keep pace with the arm.
         grasp_force: The force (N) the Hand holds an object with on closing.
-        jump_limit_s: How far a joint target may be from where the joint is,
-            in seconds at the joint's (scaled) top speed. A target further
-            away is refused.
+        jump_limit_s: How far a joint target may be from the one before it
+            (from where the joint is, when no motion is running), in seconds at
+            the joint's (scaled) top speed. A target further away is refused.
+        lag_limit_s: How far a joint target may be from where the joint is,
+            in the same units. The robot's own planner accelerates more gently
+            than a streamed trajectory, so the arm legitimately trails the
+            targets; this bound only catches targets far from the arm.
         enforce_realtime: Make libfranka refuse to run without a real-time
             kernel. Off by default: the async position control used here plans
             on the robot, and Franka's own example for it runs without one.
@@ -118,6 +122,7 @@ class FrankaConfig(ConnectionConfig):
     speed_fraction: float = FR3_DEFAULT_SPEED_FRACTION
     grasp_force: float = 20.0
     jump_limit_s: float = 0.1
+    lag_limit_s: float = 1.0
     enforce_realtime: bool = False
 
     @field_validator("ip")
@@ -201,6 +206,10 @@ class FrankaConnection(ConnectionModule):
         # How far each joint's target may be from where it is, in rad.
         self._reach = [
             self.config.jump_limit_s * top * self.config.speed_fraction for top in FR3_VELOCITY_MAX
+        ]
+        # How far each joint's target may be from where the joint is, in rad.
+        self._lag = [
+            self.config.lag_limit_s * top * self.config.speed_fraction for top in FR3_VELOCITY_MAX
         ]
         self._stop_reading = threading.Event()
         self._reader: threading.Thread | None = None
@@ -314,7 +323,9 @@ class FrankaConnection(ConnectionModule):
             # A joint left out stays where it is.
             measured = self._measured
             angles = [m if t is None else t for t, m in zip(targets, measured, strict=True)]
-            self._check_jump(angles, measured)
+            previous = self._target if self._handler is not None and self._target else measured
+            self._check_jump(angles, previous, "the previous target", self._reach)
+            self._check_jump(angles, measured, "where it is", self._lag)
             if self._handler is None:
                 if all(abs(a - m) <= _AT_TARGET_RAD for a, m in zip(angles, measured, strict=True)):
                     # Already there (e.g. holding after a finished motion): starting a
@@ -417,15 +428,15 @@ class FrankaConnection(ConnectionModule):
                 self._end_control()
                 return
 
-    def _check_jump(self, angles: list[float], measured: list[float]) -> None:
-        """Refuse joint targets (rad) too far from where the joints are now (rad)."""
-        for joint, target, now, reach in zip(
-            self._joints, angles, measured, self._reach, strict=True
-        ):
-            if abs(target - now) > reach:
+    def _check_jump(
+        self, angles: list[float], reference: list[float], what: str, reach: list[float]
+    ) -> None:
+        """Refuse joint targets (rad) further than ``reach`` from ``reference`` (rad)."""
+        for joint, target, ref, limit in zip(self._joints, angles, reference, reach, strict=True):
+            if abs(target - ref) > limit:
                 raise FrankaError(
-                    f"{joint} told {target:.3f} rad, {abs(target - now):.3f} rad from where it "
-                    f"is; at most {reach:.3f} rad away is taken"
+                    f"{joint} told {target:.3f} rad, {abs(target - ref):.3f} rad from {what}; "
+                    f"at most {limit:.3f} rad away is taken"
                 )
 
     def _set_fault(self, message: str) -> None:
