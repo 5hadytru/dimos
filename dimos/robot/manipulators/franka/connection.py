@@ -574,6 +574,16 @@ class FrankaConnection(ConnectionModule):
                 self._width = float(gripper.read_once().width)
             except Exception as error:
                 self._report(f"Franka Hand failed: {type(error).__name__}: {error}")
+                # A dropped link (another client connecting to the Hand, a cable
+                # blip) leaves this Gripper dead: open a fresh one and resend.
+                if "Net" in str(error) or "Network" in type(error).__name__:
+                    try:
+                        self._gripper = self._libfranka.Gripper(self.config.ip)
+                        sent = None
+                        logger.info("FrankaConnection: reconnected to the Franka Hand")
+                    except Exception as again:
+                        self._report(f"Franka Hand reconnect failed: {again}")
+                        self._stop_reading.wait(1.0)
 
 
 def _import_libfranka() -> Any:

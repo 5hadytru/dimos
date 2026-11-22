@@ -94,6 +94,8 @@ class FakeLibfranka:
         self.width = 0.08
         self.unreachable = False
         self.refuse_target = False
+        # Every Hand call raises as a dropped link does.
+        self.hand_down = False
         # The session's own feedback: None while it runs, else libfranka's message.
         self.session_ended: str | None = None
         fake = self
@@ -119,9 +121,13 @@ class FakeLibfranka:
                 fake.record("Gripper", ip)
 
             def read_once(self) -> Any:
+                if fake.hand_down:
+                    raise RuntimeError("Net Exception")
                 return SimpleNamespace(width=fake.width, max_width=0.08)
 
             def move(self, width: float, speed: float) -> bool:
+                if fake.hand_down:
+                    raise RuntimeError("Net Exception")
                 fake.record("move", width, speed)
                 fake.width = width
                 return True
@@ -536,3 +542,14 @@ def test_holding_a_homed_hand_open_moves_it_and_never_grasps(rig: Callable[..., 
     r.move(**{FR3_FINGER_JOINT: 0.04})
     wait_until(lambda: bool(r.franka.sent("move")), timeout=2.0)
     assert r.franka.sent("grasp") == []
+
+
+def test_a_dropped_hand_link_is_reopened_and_the_target_resent(rig: Callable[..., Rig]) -> None:
+    r = rig()
+    r.franka.width = 0.03
+    r.franka.hand_down = True  # every Hand call fails like a dropped link
+    r.move(**{FR3_FINGER_JOINT: 0.04})
+    wait_until(lambda: "Net Exception" in str(r.module.status().last_error), timeout=2.0)
+    r.franka.hand_down = False
+    wait_until(lambda: bool(r.franka.sent("move")), timeout=3.0)
+    assert r.franka.names().count("Gripper") >= 2
