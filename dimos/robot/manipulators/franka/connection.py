@@ -54,9 +54,8 @@ _READING_MAX_AGE_S = 10 / _READ_HZ
 # The Hand is read on every 10th reading of the joints.
 _GRIPPER_READ_EVERY = 10
 
-# Collision thresholds, as in Franka's examples (example_common.setDefaultBehaviour).
+# Joint collision thresholds, as in Franka's examples (example_common.setDefaultBehaviour).
 _TORQUE_THRESHOLDS = ([20.0] * 7, [40.0] * 7)  # Nm, lower then upper
-_FORCE_THRESHOLDS = ([10.0] * 6, [20.0] * 6)  # N and Nm, lower then upper
 
 # How close (rad) the arm must come to a target for libfranka to call it reached.
 _GOAL_TOLERANCE_RAD = 0.01
@@ -111,6 +110,11 @@ class FrankaConfig(ConnectionConfig):
             in the same units. The robot's own planner accelerates more gently
             than a streamed trajectory, so the arm legitimately trails the
             targets; this bound only catches targets far from the arm.
+        contact_force: The tool's collision thresholds, lower then upper, in N
+            (and Nm for the torques). Franka's examples use 10 / 20; with the
+            wrist camera and its cable, the FR3's own estimate read up to 12.6 N
+            with nothing touching while moving through a folded pose near the
+            base, and a 20 N upper threshold stopped a pick there.
         enforce_realtime: Make libfranka refuse to run without a real-time
             kernel. Off by default: the async position control used here plans
             on the robot, and Franka's own example for it runs without one.
@@ -123,6 +127,7 @@ class FrankaConfig(ConnectionConfig):
     grasp_force: float = 20.0
     jump_limit_s: float = 0.1
     lag_limit_s: float = 1.0
+    contact_force: tuple[float, float] = (20.0, 40.0)
     enforce_realtime: bool = False
 
     @field_validator("ip")
@@ -296,8 +301,9 @@ class FrankaConnection(ConnectionModule):
         self._robot = robot
         self._take_reading(state)
         try:
+            lower, upper = self.config.contact_force
             robot.set_collision_behavior(
-                _TORQUE_THRESHOLDS[0], _TORQUE_THRESHOLDS[1], *_FORCE_THRESHOLDS
+                _TORQUE_THRESHOLDS[0], _TORQUE_THRESHOLDS[1], [lower] * 6, [upper] * 6
             )
             if self.config.hand:
                 self._gripper = self._libfranka.Gripper(ip)

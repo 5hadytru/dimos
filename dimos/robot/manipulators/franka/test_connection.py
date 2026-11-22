@@ -579,3 +579,12 @@ def test_a_target_far_from_the_arm_is_refused_even_in_small_steps(rig: Callable[
         r.move(fr3_joint2=REST[1] + 0.05 * k)
     # 1.0 s at 25% of 2.62 rad/s is 0.655 rad: the 14th step (0.70 rad) is refused.
     assert k == 14
+
+
+def test_the_tool_contact_thresholds_are_set_from_the_config(rig: Callable[..., Rig]) -> None:
+    r = rig()
+    ((args, _),) = r.franka.sent("set_collision_behavior")
+    assert args[2:] == ([20.0] * 6, [40.0] * 6)
+    r2 = rig(contact_force=(15.0, 30.0))
+    ((args2, _),) = r2.franka.sent("set_collision_behavior")
+    assert args2[2:] == ([15.0] * 6, [30.0] * 6)
