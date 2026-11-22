@@ -64,6 +64,18 @@ FR3_HAND_COLLISION_EXCLUSIONS: list[tuple[str, str]] = [
 ]
 
 
+# Where the Franka Hand's parts sit along its approach, from fr3_hand_tcp (0.1034 m
+# out of the hand), metres, from franka_description: the pads' centre (finger
+# frame z 0.04525 at hand z 0.0584) is level with the TCP, the fingertips reach
+# 0.0095 m past it, and the hand's body ends 0.0374 m behind it (hand.stl reaches
+# z 0.066). Heuristic grasps aim the pads with these.
+FR3_HEURISTIC_AIM = {
+    "pad_behind_tcp": 0.0,
+    "fingertip_reach": 0.0095,
+    "palm_behind_tcp": 0.0374,
+}
+
+
 def fr3_wrist_camera_transform() -> Transform:
     """Where the wrist RealSense D435i sits on the Franka Hand: fr3_hand -> camera_link.
 
@@ -142,8 +154,13 @@ def make_fr3_model_config(
     base_pose: PoseStamped | None = None,
     home_joints: list[float] | None = None,
     pre_grasp_offset: float = 0.10,
+    tf_extra_links: list[str] | None = None,
 ) -> RobotModelConfig:
-    """The FR3's planning model, from ``fr3_model``; tool frame is the Hand's TCP."""
+    """The FR3's planning model, from ``fr3_model``; tool frame is the Hand's TCP.
+
+    ``tf_extra_links`` are links published on tf besides the tip, e.g.
+    ``fr3_hand``, which the wrist camera's transform hangs off.
+    """
     names = fr3_joint_names(robot)
     tip_link = f"{FR3_PREFIX}hand_tcp" if hand else f"{FR3_PREFIX}link8"
     return RobotModelConfig(
@@ -167,4 +184,5 @@ def make_fr3_model_config(
         gripper=fr3_gripper_config(robot) if hand else None,
         home_joints=home_joints or list(FR3_READY),
         pre_grasp_offset=pre_grasp_offset,
+        tf_extra_links=tf_extra_links or [],
     )

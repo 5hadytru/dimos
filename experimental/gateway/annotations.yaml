@@ -879,8 +879,12 @@ robots:
         fr3-planner-coordinator:
           title: FR3 motion planning
           description: Motion planning and execution for a Franka Research 3 with the Franka Hand.
-          recommended_config:
+          recommended_config: &fr3_connection_config
           - {module: frankaconnection, field: ip, label: FCI IP, placeholder: 172.16.0.2, required: true}
+        fr3-grasp:
+          title: FR3 pick and place
+          description: Perception, grasping and pick-and-place on a real FR3 with a wrist RealSense.
+          recommended_config: *fr3_connection_config
     makermods_metal:
       name: MakerMods Metal
       description: The six-joint Metal arm and gripper, over CAN.

@@ -75,6 +75,7 @@ all_blueprints = {
     "dual-openyam-planner-coordinator": "dimos.robot.manipulators.dual_openyam.blueprints.basic:dual_openyam_planner_coordinator",
     "dual-openyam-quest-collection": "dimos.robot.manipulators.dual_openyam.blueprints.learning_collection:dual_openyam_quest_collection",
     "dual-xarm6-planner-coordinator": "dimos.robot.manipulators.xarm.blueprints.basic:dual_xarm6_planner_coordinator",
+    "fr3-grasp": "dimos.robot.manipulators.franka.blueprints.grasp:fr3_grasp",
     "fr3-planner-coordinator": "dimos.robot.manipulators.franka.blueprints.basic:fr3_planner_coordinator",
     "go2-dds": "dimos.robot.unitree.go2.dds.blueprints:go2_dds",
     "go2-dds-mid360": "dimos.robot.unitree.go2.dds.blueprints:go2_dds_mid360",
