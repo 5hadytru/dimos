@@ -42,6 +42,7 @@ from dimos.control.task import (
     ControlMode,
     CoordinatorState,
     JointCommandOutput,
+    JointImpedance,
     JointStateSnapshot,
     ResourceClaim,
 )
@@ -1225,6 +1226,47 @@ class TestArbitration:
         assert winners["j3"][3] == "task2"
         assert winners["j4"][3] == "task2"
 
+    def test_impedance_output_wins_with_its_numbers(self):
+        position_task = MagicMock()
+        position_task.name = "position"
+        impedance_task = MagicMock()
+        impedance_task.name = "impedance"
+        tick_loop = TickLoop(
+            tick_rate=100.0,
+            hardware={},
+            hardware_lock=threading.Lock(),
+            tasks={},
+            task_lock=threading.Lock(),
+            joint_to_hardware={},
+        )
+
+        joint_commands, _ = tick_loop._arbitrate(
+            [
+                (
+                    position_task,
+                    ResourceClaim(joints=frozenset({"j1"}), priority=10),
+                    JointCommandOutput(joint_names=["j1"], positions=[0.5]),
+                ),
+                (
+                    impedance_task,
+                    ResourceClaim(joints=frozenset({"j1"}), priority=20),
+                    JointCommandOutput(
+                        joint_names=["j1"],
+                        positions=[0.2],
+                        efforts=[1.5],
+                        stiffness=[30.0],
+                        mode=ControlMode.IMPEDANCE,
+                    ),
+                ),
+            ]
+        )
+
+        assert joint_commands["j1"] == (
+            JointImpedance(position=0.2, velocity=None, effort=1.5, stiffness=30.0, damping=None),
+            ControlMode.IMPEDANCE,
+            "impedance",
+        )
+
 
 class TestTickLoop:
     def test_unready_whole_body_is_excluded_from_read_and_write(self, mocker):
@@ -1416,6 +1458,41 @@ class TestTickLoop:
 
         log_error.assert_called_once_with(
             "Hardware arm rejected SERVO_POSITION command from control task"
+        )
+
+    def test_impedance_winner_never_reaches_an_adapter(self, mock_adapter, mocker):
+        hardware = ConnectedHardware(
+            mock_adapter,
+            HardwareComponent(
+                hardware_id="arm",
+                hardware_type=HardwareType.MANIPULATOR,
+                joints=make_joints("arm", 6),
+            ),
+        )
+        write_command = mocker.patch.object(hardware, "write_command")
+        log_error = mocker.patch("dimos.control.tick_loop.logger.error")
+        task = MagicMock()
+        task.name = "impedance"
+        task.is_active.return_value = True
+        task.claim.return_value = ResourceClaim(joints=frozenset({"arm/joint1"}), priority=10)
+        task.compute.return_value = JointCommandOutput(
+            joint_names=["arm/joint1"], stiffness=[30.0], mode=ControlMode.IMPEDANCE
+        )
+        tick_loop = TickLoop(
+            tick_rate=100.0,
+            hardware={"arm": hardware},
+            hardware_lock=threading.Lock(),
+            tasks={"impedance": task},
+            task_lock=threading.Lock(),
+            joint_to_hardware={f"arm/joint{i + 1}": "arm" for i in range(6)},
+        )
+
+        tick_loop._tick()
+        tick_loop._tick()
+
+        write_command.assert_not_called()
+        log_error.assert_called_once_with(
+            "arm is an adapter and takes no IMPEDANCE command; ignoring impedance on it"
         )
 
 

@@ -38,6 +38,7 @@ from dimos.control.task import (
     ControlTask,
     CoordinatorState,
     JointCommandOutput,
+    JointImpedance,
     JointStateSnapshot,
     ResourceClaim,
     SensorStateSnapshot,
@@ -64,7 +65,7 @@ class JointWinner(NamedTuple):
     """Tracks the winning task for a joint during arbitration."""
 
     priority: int
-    value: float
+    value: float | JointImpedance  # JointImpedance exactly when mode is IMPEDANCE
     mode: ControlMode
     task_name: str
 
@@ -128,6 +129,8 @@ class TickLoop:
         self._connection_command_callback = connection_command_callback
         # Robots already told off for never reporting, so each is told off once.
         self._silence_logged: set[str] = set()
+        # Adapters already told off for an IMPEDANCE command, so each is told off once.
+        self._impedance_refused: set[HardwareId] = set()
         self._started_at = time.monotonic()
         self._hardware_lock = hardware_lock
         self._tasks = tasks
@@ -367,7 +370,7 @@ class TickLoop:
         self,
         commands: list[tuple[ControlTask, ResourceClaim, JointCommandOutput | None]],
     ) -> tuple[
-        dict[str, tuple[float, ControlMode, str]],
+        dict[str, tuple[float | JointImpedance, ControlMode, str]],
         dict[str, dict[str, str]],
     ]:
         """Per-joint arbitration with mode conflict detection.
@@ -385,11 +388,13 @@ class TickLoop:
                 continue
 
             values = output.get_values()
-            if values is None:
+            if values is None and output.mode is not ControlMode.IMPEDANCE:
                 continue
 
             for i, joint_name in enumerate(output.joint_names):
-                candidate = JointWinner(claim.priority, values[i], output.mode, task.name)
+                # values is None here only for an IMPEDANCE output.
+                value = output.impedance(i) if values is None else values[i]
+                candidate = JointWinner(claim.priority, value, output.mode, task.name)
 
                 # First claim on this joint
                 if joint_name not in winners:
@@ -451,7 +456,7 @@ class TickLoop:
 
     def _route_to_hardware(
         self,
-        joint_commands: dict[str, tuple[float, ControlMode, str]],
+        joint_commands: dict[str, tuple[float | JointImpedance, ControlMode, str]],
     ) -> dict[str, tuple[dict[str, float], ControlMode]]:
         """Route joint-centric commands to hardware.
 
@@ -464,13 +469,21 @@ class TickLoop:
         hw_commands: dict[str, tuple[dict[str, float], ControlMode]] = {}
 
         with self._hardware_lock:
-            for joint_name, (value, mode, _) in joint_commands.items():
+            for joint_name, (value, mode, task_name) in joint_commands.items():
                 hw_id = self._joint_to_hardware.get(joint_name)
                 if hw_id is None:
                     logger.warning(f"Unknown joint {joint_name}, cannot route")
                     continue
 
                 if hw_id in self._connections:
+                    continue
+                if isinstance(value, JointImpedance):
+                    if hw_id not in self._impedance_refused:
+                        self._impedance_refused.add(hw_id)
+                        logger.error(
+                            f"{hw_id} is an adapter and takes no IMPEDANCE command; "
+                            f"ignoring {task_name} on it"
+                        )
                     continue
                 if hw_id not in hw_commands:
                     hw_commands[hw_id] = ({}, mode)
@@ -536,7 +549,7 @@ class TickLoop:
 
     def _write_all_connections(
         self,
-        joint_commands: dict[str, tuple[float, ControlMode, str]],
+        joint_commands: dict[str, tuple[float | JointImpedance, ControlMode, str]],
     ) -> None:
         """Send every robot behind a connection module its complete command.
 
@@ -559,7 +572,8 @@ class TickLoop:
                     if self._joint_to_hardware.get(joint) == name
                 }
                 try:
-                    publish(name, source.command(winners))
+                    # command() refuses an IMPEDANCE joint before it reads the value.
+                    publish(name, source.command(winners))  # type: ignore[arg-type]
                 except Exception as e:
                     logger.error(f"Failed to send a command to {name}: {e}")
 
