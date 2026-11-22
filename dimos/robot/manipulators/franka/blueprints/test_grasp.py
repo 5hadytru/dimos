@@ -77,3 +77,14 @@ def test_the_wrist_camera_looks_down_the_hand_beside_the_fingers() -> None:
     t = np.array([transform.translation.x, transform.translation.y, transform.translation.z])
     assert 0.03 < np.hypot(t[0], t[1]) < 0.09
     assert 0.0 < t[2] < 0.1034
+
+
+def test_the_self_filter_can_place_the_cloud_in_the_models_root() -> None:
+    # UrdfManagerPointClearing looks up root link -> camera on tf; the planner
+    # publishes world -> each of tf_extra_links, so the root must be one of them.
+    from dimos.manipulation.manipulation_module import ManipulationModule
+    from dimos.robot.manipulators.franka.config import fr3_model
+
+    atom = next(a for a in fr3_grasp.solidify().active_blueprints if a.module is ManipulationModule)
+    root = fr3_model(robot="arm").load().root_link
+    assert root in atom.kwargs["model"].tf_extra_links

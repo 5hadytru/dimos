@@ -37,6 +37,7 @@ from dimos.robot.manipulators.franka.blueprints.basic import FRANKA_REMAPS, fran
 from dimos.robot.manipulators.franka.config import (
     FR3_HEURISTIC_AIM,
     FR3_PREFIX,
+    FR3_ROOT_LINK,
     fr3_model,
     fr3_wrist_camera_transform,
     make_fr3_model_config,
@@ -49,8 +50,9 @@ FR3_GRASP_VOXEL_SIZE = 0.025
 _model = make_fr3_model_config(
     robot="arm",
     base_pose=PoseStamped(frame_id="world"),
-    # The wrist camera's transform hangs off fr3_hand, so it goes out on tf too.
-    tf_extra_links=[f"{FR3_PREFIX}hand"],
+    # The wrist camera's transform hangs off fr3_hand, and the self filter places
+    # the cloud in the model's root link, so both go out on tf.
+    tf_extra_links=[FR3_ROOT_LINK, f"{FR3_PREFIX}hand"],
 )
 
 fr3_grasp = autoconnect(
