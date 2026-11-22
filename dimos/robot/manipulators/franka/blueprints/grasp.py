@@ -32,6 +32,7 @@ from dimos.manipulation.manipulation_module import ManipulationModule
 from dimos.manipulation.manipulation_skills import ManipulationSkills
 from dimos.manipulation.pick_and_place_module import PickAndPlaceModule
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.perception.localize.types import LocalizeParams
 from dimos.robot.manipulators.common.blueprints import manipulation_mapping
 from dimos.robot.manipulators.franka.blueprints.basic import FRANKA_REMAPS, franka_coordinator
 from dimos.robot.manipulators.franka.config import (
@@ -70,7 +71,8 @@ fr3_grasp = autoconnect(
     # enable_pointcloud is off by default, and the voxel chain has nothing to map without it.
     RealSenseCamera.blueprint(enable_pointcloud=True),
     # Finds the objects pick_object takes by id, and the dense scene its contact check needs.
-    ManipulationLocalize.blueprint(world_frame="world"),
+    # The wrist camera often looks from one pose (the arm still), so one view confirms an object.
+    ManipulationLocalize.blueprint(world_frame="world", params=LocalizeParams(min_views=1)),
     manipulation_mapping(
         # Filter the arm and the Hand out of the camera's cloud.
         self_filter_model=fr3_model(robot="arm"),
