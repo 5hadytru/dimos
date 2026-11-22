@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import sys
-from typing import Any
+from typing import Any, NamedTuple
 
 import can_motor_control
 from can_motor_control import damiao
@@ -95,6 +95,15 @@ class PhysicalModel:
         return gravity
 
 
+class Impedance(NamedTuple):
+    """How one arm joint is driven besides its target position. None keeps the default."""
+
+    velocity: float | None = None  # target speed, rad/s; None is 0
+    effort: float | None = None  # extra torque on top of gravity, Nm; None is 0
+    stiffness: float | None = None  # spring strength, Nm/rad; None is the bus's kp
+    damping: float | None = None  # damper strength, Nm·s/rad; None is the bus's kd
+
+
 @dataclass(frozen=True, slots=True)
 class ArmReading:
     """One synchronous sample of every commanded joint."""
@@ -146,6 +155,8 @@ class DamiaoArm:
         # Each gripper joint's (closed, open) positions.
         self._travel: dict[str, tuple[float, float]] = {}
         self._targets: dict[str, float] = {}
+        # Arm joint -> its numbers from the last command; absent means the defaults.
+        self._impedance: dict[str, Impedance] = {}
         self._active = False
 
     @property
@@ -200,21 +211,45 @@ class DamiaoArm:
         self._active = True
         self._targets = dict(zip(self.joint_names, self._sample().position, strict=True))
 
-    def command(self, targets: Mapping[str, float]) -> None:
-        """Merge position targets by joint name and send one MIT tick."""
+    def command(
+        self, targets: Mapping[str, float], impedance: Mapping[str, Impedance] | None = None
+    ) -> None:
+        """Merge position targets by joint name and send one MIT tick.
+
+        Args:
+            targets: Joint name to target position, in rad, or m for a sliding
+                jaw. A joint left out keeps its last target.
+            impedance: Arm joint name to its speed, extra torque, stiffness and
+                damping. Replaces what the previous command set: a joint left
+                out, or every joint when None, gets the bus's kp and kd, no
+                target speed and no extra torque. A joint named here without a
+                target is aimed where it is measured now, so its spring adds
+                no force.
+        """
+        impedance = dict(impedance or {})
         unknown = set(targets) - set(self.joint_names)
         if unknown:
             raise ValueError(f"unknown Damiao joints: {sorted(unknown)}")
+        not_arm = set(impedance) - set(self._robot.arm_joint_names)
+        if not_arm:
+            raise ValueError(
+                f"only arm joints take speed, torque, stiffness or damping: {sorted(not_arm)}"
+            )
         if self._native is None or not self._active:
             raise RuntimeError("Damiao robot is inactive")
+        measured = dict(zip(self._robot.arm_joint_names, self._arm_positions(), strict=True))
+        self._targets.update({name: measured[name] for name in impedance if name not in targets})
         self._targets.update(targets)
+        self._impedance = impedance
         self._send()
 
     def hold(self) -> None:
-        """Hold every joint where it is now, e.g. when commands stop arriving."""
+        """Hold every joint where it is now with the bus's gains and gravity
+        alone, e.g. when commands stop arriving."""
         if self._native is None or not self._active:
             return
         self._targets = dict(zip(self.joint_names, self._sample().position, strict=True))
+        self._impedance = {}
         self._send()
 
     def read(self) -> ArmReading:
@@ -363,16 +398,19 @@ class DamiaoArm:
         arm_rows: list[tuple[str, NDArray[np.float64]]] = []
         for bus in self._robot.buses:
             kp, kd = self._gains(bus, offset)
+            # The motor applies kp * (q - measured q) + kd * (dq - measured dq) + tau.
             rows = np.asarray(
                 [
                     [
-                        kp[index],
-                        kd[index],
+                        kp[index] if each.stiffness is None else each.stiffness,
+                        kd[index] if each.damping is None else each.damping,
                         positions[offset + index],
-                        0.0,
-                        gravity[offset + index],
+                        each.velocity or 0.0,
+                        gravity[offset + index] + (each.effort or 0.0),
                     ]
-                    for index in range(len(bus.arm))
+                    for index, each in enumerate(
+                        self._impedance.get(motor.name, Impedance()) for motor in bus.arm
+                    )
                 ],
                 dtype=np.float64,
             )
