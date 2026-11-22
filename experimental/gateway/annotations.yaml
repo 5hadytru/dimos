@@ -869,6 +869,18 @@ robots:
           description: Move a real Piper's end and its gripper from the Desktop Manipulation app, through PiperConnection.
           recommended_config:
           - {module: piperconnection, field: can_port, label: CAN port, placeholder: can0, required: true}
+    franka:
+      name: Franka Research 3
+      description: Franka Robotics' 7-axis research arm with the Franka Hand, over FCI.
+      type: arm
+      manufacturer: Franka Robotics
+      dirs: [dimos/robot/manipulators/franka]
+      blueprints:
+        fr3-planner-coordinator:
+          title: FR3 motion planning
+          description: Motion planning and execution for a Franka Research 3 with the Franka Hand.
+          recommended_config:
+          - {module: frankaconnection, field: ip, label: FCI IP, placeholder: 172.16.0.2, required: true}
     makermods_metal:
       name: MakerMods Metal
       description: The six-joint Metal arm and gripper, over CAN.
