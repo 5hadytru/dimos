@@ -572,8 +572,7 @@ class TickLoop:
                     if self._joint_to_hardware.get(joint) == name
                 }
                 try:
-                    # command() refuses an IMPEDANCE joint before it reads the value.
-                    publish(name, source.command(winners))  # type: ignore[arg-type]
+                    publish(name, source.command(winners))
                 except Exception as e:
                     logger.error(f"Failed to send a command to {name}: {e}")
 

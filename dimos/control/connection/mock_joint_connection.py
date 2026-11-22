@@ -20,13 +20,14 @@ import threading
 import time
 from typing import Any
 
+from dimos_lcm.control_msgs import DynamicJointState
 import numpy as np
 from pydantic import Field, model_validator
 from reactivex.disposable import Disposable
 
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.control.connection.connection_module import ConnectionConfig, ConnectionModule, Values
-from dimos.control.contract.convert import joint_state_to_values
+from dimos.control.contract.convert import dynamic_joint_state_to_values, joint_state_to_values
 from dimos.control.contract.keys import Interface
 from dimos.control.contract.limits import movable_joints
 from dimos.core.core import rpc
@@ -52,10 +53,16 @@ class MockJointConnectionConfig(ConnectionConfig):
 
 
 class MockJointConnection(ConnectionModule):
-    """Echo accepted position targets as measured joints; no dynamics or device SDK."""
+    """Echo accepted position targets as measured joints; no dynamics or device SDK.
+
+    Commands come on ``position_command`` or ``impedance_command``. Of an
+    impedance command only the positions are echoed; its other numbers are
+    checked against the limits and then ignored.
+    """
 
     config: MockJointConnectionConfig
     position_command: In[JointState]
+    impedance_command: In[DynamicJointState]
     joint_state: Out[JointState]
 
     def __init__(self, **kwargs: Any) -> None:
@@ -78,6 +85,10 @@ class MockJointConnection(ConnectionModule):
         try:
             super().start()
             self.register_disposable(Disposable(self.position_command.subscribe(self._on_position)))
+            if self.impedance_command.transport:
+                self.register_disposable(
+                    Disposable(self.impedance_command.subscribe(self._on_impedance))
+                )
             self._reader = threading.Thread(target=self._read_loop, daemon=True)
             self._reader.start()
         except Exception:
@@ -103,12 +114,22 @@ class MockJointConnection(ConnectionModule):
             return
         self.command(values)
 
+    def _on_impedance(self, message: DynamicJointState) -> None:
+        try:
+            values = dynamic_joint_state_to_values(message)
+        except ValueError as error:
+            self._report(str(error), rejection=True)
+            return
+        self.command(values)
+
     def write(self, values: Values) -> None:
         prefix = f"{self.config.source}/"
+        suffix = f"/{Interface.POSITION}"
         self._positions.update(
             {
-                key.removeprefix(prefix).removesuffix("/position"): value
+                key.removeprefix(prefix).removesuffix(suffix): value
                 for key, value in values.items()
+                if key.endswith(suffix)
             }
         )
 
