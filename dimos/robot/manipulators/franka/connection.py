@@ -323,8 +323,10 @@ class FrankaConnection(ConnectionModule):
             # A joint left out stays where it is.
             measured = self._measured
             angles = [m if t is None else t for t, m in zip(targets, measured, strict=True)]
-            previous = self._target if self._handler is not None and self._target else measured
-            self._check_jump(angles, previous, "the previous target", self._reach)
+            if self._handler is not None and self._target:
+                self._check_jump(angles, self._target, "the previous target", self._reach)
+            else:
+                self._check_jump(angles, measured, "where it is (no motion running)", self._reach)
             self._check_jump(angles, measured, "where it is", self._lag)
             if self._handler is None:
                 if all(abs(a - m) <= _AT_TARGET_RAD for a, m in zip(angles, measured, strict=True)):
