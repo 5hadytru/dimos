@@ -52,8 +52,16 @@ is Franka's ready pose.
   feedback (not through `Robot.read_once()`), so the connection checks that
   feedback every cycle. Ended at the target, it is a finished session and the
   next new target starts another; a target within 0.01 rad of the arm starts
-  none. Ended anywhere else, or with the arm standing still over 0.02 rad from
-  its target for 0.3 s, the connection faults.
+  none, so a move turning every joint less than that (a few mm at the tool)
+  does not run. A robot can also end a session short of its target with no
+  reflex and nothing in Desk (one FR3 did so on most moves, 1-10 deg short,
+  while trailing a streamed trajectory): with the arm in no stop, the
+  connection then ends the session without a fault and holds where the arm
+  is; a next target within one jump starts a fresh session that finishes the
+  move, and one further away is refused by the jump check, so the caller
+  re-plans from where the arm is. Three of these within 5 s, an ending in a
+  stop, or the arm standing still over 0.02 rad from its target for 0.3 s
+  while a session runs, faults the connection.
 - **Speed.** The robot's planner is capped at `speed_fraction` of each joint's
   top speed (default 0.25, the value Franka's example uses). The model's
   velocity limits are scaled by the same share, so plans and the arm keep
@@ -74,7 +82,25 @@ is Franka's ready pose.
 - **Hand.** The gripper joint is `arm/fr3_finger_joint1`, 0.0 (closed) to
   0.04 m (open) per finger. Closing calls `grasp()` with `grasp_force`
   (default 20 N), which holds an object rather than failing when the fingers
-  are blocked; opening calls `move()`.
+  are blocked; opening calls `move()`. The Hand is handled before the arm's
+  checks in every command, so a refused arm target never drops a Hand command
+  with it. pylibfranka's Gripper calls hold Python's GIL for as long as the
+  fingers move (about a second), which would stall the arm's 100 Hz reading
+  thread, so the Hand runs in a program of its own
+  (`franka.hand_process`, a subprocess: dimOS modules may not have
+  `multiprocessing` children). A `move()` holds a width without force: on
+  startup the gripper task's first hold is a move, so restart the stack only
+  with the Hands empty.
+- **Straight paths.** `ManipulationModule.move_linear_path(waypoints, ...)`
+  moves one tool through a list of world-frame displacements from where it is,
+  in straight lines without stopping and at a fixed orientation, with an
+  optional linear speed cap and corner blend (used to draw with a held pen).
+- **What the planner does not know.** A trajectory reports `COMPLETED` once it
+  has been played, also when the separation guard held the arm or the
+  connection faulted: check the measured joints. Objects held in a Hand are not
+  in the planning model: a long held object can be swept into the table by a
+  planned move, so carry it with straight moves or check the plan's
+  trajectory first (`examples/franka_tabletop_bimanual/pen_demo.py`, `carry`).
 
 ## Two FR3s clamped to a table
 
@@ -115,6 +141,15 @@ dimos run fr3-tabletop-bimanual --right_arm.ip 10.42.0.230 --left_arm.ip 10.43.0
   before a wrist or camera reaches its 5 cm limit.
 - **Cameras.** A RealSense on each wrist and one on a tripod over the table,
   at 640x480, publish on `right_wrist_*`, `left_wrist_*` and `scene_*` streams.
+
+## Skills and setup scripts
+
+`examples/franka_tabletop_bimanual/` holds the scripts that run on a live
+`fr3-tabletop-bimanual` stack: the calibration (hand-eye per wrist camera,
+arm-to-arm, tripod), class-agnostic table perception, a handover skill (pick,
+hand over, place any box-like object), a pen skill (pick, click, draw, click,
+put down), a runbook, a write-up of the code, and notes of every hardware fault
+seen. Its `README.md` lists them.
 
 ## Not supported yet
 
