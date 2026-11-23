@@ -508,16 +508,31 @@ def test_a_session_the_robot_ends_at_its_target_is_not_a_fault(rig: Callable[...
     ]
 
 
-def test_a_session_ended_away_from_its_target_faults(rig: Callable[..., Rig]) -> None:
+def test_a_session_ended_short_of_its_target_is_restarted_by_the_next_target(
+    rig: Callable[..., Rig],
+) -> None:
     r = rig()
     r.move(fr3_joint1=0.05)
     r.franka.session_ended = "Unexpected reply to a Move command"
+    wait_until(lambda: "cancel_motion" in r.franka.names(), timeout=2.0)
+    assert r.module.status().last_error is None
+    r.franka.session_ended = None
+    r.move(fr3_joint1=0.05)  # the coordinator keeps sending it: a fresh session finishes the move
+    assert len(r.franka.sent("configure")) == 2
+    assert r.franka.targets()[-1] == pytest.approx([0.05, *REST[1:]])
+
+
+def test_a_session_ending_short_again_and_again_faults(rig: Callable[..., Rig]) -> None:
+    r = rig()
+    r.franka.session_ended = "Unexpected reply to a Move command"
+    for ended in range(1, 4):
+        r.move(fr3_joint1=0.05)
+        wait_until(lambda n=ended: r.franka.names().count("cancel_motion") >= n, timeout=2.0)
+        assert r.module.status().last_error is None
+    r.move(fr3_joint1=0.05)
     wait_until(
         lambda: "ended away from its target" in str(r.module.status().last_error), timeout=2.0
     )
-    r.franka.session_ended = None
-    r.move(fr3_joint1=0.05)
-    assert len(r.franka.targets()) == 2
 
 
 def test_an_arm_standing_still_short_of_its_target_faults(

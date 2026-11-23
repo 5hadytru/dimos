@@ -88,6 +88,10 @@ _GRIPPER_DEADBAND = 0.0005
 # sits at ~80.1 mm, so a hold at 80.0 mm must not become a grasp: a grasp with
 # nothing between the fingers was seen to close them fully.
 _GRASP_MIN_CLOSE = 0.005
+# Sessions the robot ended short of their target (in no stop) that may be restarted
+# within this many seconds; one more is a fault.
+_RESTARTS_MAX = 3
+_RESTART_WINDOW_S = 5.0
 
 
 class FrankaError(RuntimeError):
@@ -220,6 +224,8 @@ class FrankaConnection(ConnectionModule):
         self._band: list[tuple[float, float]] | None = None
         # time.monotonic() since when the arm has stood still away from its target.
         self._stalled_since: float | None = None
+        # time.monotonic() of each recent session restarted after ending short.
+        self._restarts: list[float] = []
         # How far each joint's target may be from where it is, in rad.
         self._reach = [
             self.config.jump_limit_s * top * self.config.speed_fraction for top in FR3_VELOCITY_MAX
@@ -495,11 +501,33 @@ class FrankaConnection(ConnectionModule):
                 f"FrankaConnection: session ended at its target ({feedback.error_message})"
             )
             self._end_control()
-        else:
-            self._set_fault(
-                f"the control session ended away from its target: {feedback.error_message}"
+            return
+        # The robot can also end a motion short of its target with no reflex and
+        # nothing in Desk (one FR3 did so on most moves, 1-8 deg short, while trailing a
+        # streamed trajectory). With the arm in no stop, end the session without a
+        # fault: the arm holds where it is. A next target within one jump starts a
+        # fresh session that finishes the move; one further away is refused by the jump
+        # check as ever, and a new plan from where the arm is finishes it. Too many in
+        # a row is a fault as before.
+        mode = self._state.robot_mode.name if self._state is not None else ""
+        now = time.monotonic()
+        self._restarts = [t for t in self._restarts if now - t < _RESTART_WINDOW_S]
+        if (
+            mode not in ("Reflex", "UserStopped")
+            and "Unexpected reply" in str(feedback.error_message)
+            and target is not None
+            and len(self._restarts) < _RESTARTS_MAX
+        ):
+            self._restarts.append(now)
+            away = max(abs(t - m) for t, m in zip(target, self._measured, strict=True))
+            logger.warning(
+                f"FrankaConnection: the robot ended the motion {away:.3f} rad short of its "
+                "target, in no stop; holding there until a target starts a new session"
             )
             self._end_control()
+            return
+        self._set_fault(f"the control session ended away from its target: {feedback.error_message}")
+        self._end_control()
 
     def _check_following(self, state: Any) -> None:
         """Fault if, with a session running, the arm stands still short of its target."""
