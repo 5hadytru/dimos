@@ -1041,7 +1041,7 @@ class ManipulationModule(Module):
 
         ``blend_deviation`` (m) is how far a corner may be rounded off.
         """
-        deltas = [tuple(float(v) for v in w) for w in waypoints]
+        deltas = [(float(w[0]), float(w[1]), float(w[2])) for w in waypoints]
         last = deltas[-1] if deltas else (0.0, 0.0, 0.0)
         if not deltas or not all(math.isfinite(v) for w in deltas for v in w):
             plan_result = PlanResult(PlanStatus.INVALID_TARGET, "waypoints must be finite")
@@ -1072,7 +1072,7 @@ class ManipulationModule(Module):
                     ),
                 ]
             },
-            CartesianPathConfig(**update),
+            CartesianPathConfig().model_copy(update=update),
             speed_scale=resolved_speed,
             check_collision=check_collision,
         )
