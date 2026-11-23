@@ -54,11 +54,11 @@ LEFT_IN = [-0.5, 0.6, 0.0, -1.2, 0.0, 1.571, 0.785]
 # A handover over the middle of the table, the two grippers face to face, level,
 # fingers opening sideways, their TCPs 4 cm apart (solved by IK): the grippers are
 # 21 mm apart and the rest of the arms (wrists, cameras) 5.7 cm.
-HANDOVER_RIGHT = [0.283, 0.185, -0.083, -2.466, 1.94, 1.746, 1.247]
-HANDOVER_LEFT = [-0.247, 0.218, 0.062, -2.474, -1.931, 1.674, 0.359]
+HANDOVER_RIGHT = [0.284, 0.186, -0.082, -2.464, 1.943, 1.748, 1.247]
+HANDOVER_LEFT = [-0.272, 0.186, 0.047, -2.464, -1.94, 1.753, 0.326]
 # The right gripper 1 cm further in (TCPs 3 cm apart): grippers 11 mm, but the rest
 # of the arms 4.7 cm.
-HANDOVER_RIGHT_CLOSER = [0.295, 0.194, -0.072, -2.452, 1.96, 1.759, 1.247]
+HANDOVER_RIGHT_CLOSER = [0.296, 0.195, -0.071, -2.45, 1.963, 1.761, 1.247]
 
 
 @pytest.fixture(scope="module")

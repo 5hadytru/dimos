@@ -16,7 +16,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import ipaddress
+import multiprocessing
+import queue
 import threading
 import time
 from typing import Any
@@ -118,6 +121,11 @@ class FrankaConfig(ConnectionConfig):
         enforce_realtime: Make libfranka refuse to run without a real-time
             kernel. Off by default: the async position control used here plans
             on the robot, and Franka's own example for it runs without one.
+        hand_process: Drive the Hand from a process of its own. pylibfranka's
+            Gripper calls hold Python's GIL for as long as the fingers move
+            (about a second), which stops the arm's reading thread for that
+            long: joint targets are then refused as stale and a running control
+            session can end. Off only for tests on a fake pylibfranka.
     """
 
     ip: str
@@ -129,6 +137,7 @@ class FrankaConfig(ConnectionConfig):
     lag_limit_s: float = 1.0
     contact_force: tuple[float, float] = (20.0, 40.0)
     enforce_realtime: bool = False
+    hand_process: bool = True
 
     @field_validator("ip")
     @classmethod
@@ -218,14 +227,13 @@ class FrankaConnection(ConnectionModule):
         ]
         self._stop_reading = threading.Event()
         self._reader: threading.Thread | None = None
-        # The Hand's move() and grasp() wait for the fingers, so one thread
-        # owns the Gripper and this module only hands it widths.
-        self._gripper: Any = None
-        self._gripper_wake = threading.Condition()
-        self._gripper_goal: float | None = None
+        # The Hand's move() and grasp() wait for the fingers, so a worker of its
+        # own (a process on hardware, see FrankaConfig.hand_process) owns the
+        # Gripper: widths go to it on one queue, its readings come back on another.
+        self._hand: _HandWorker | None = None
         self._finger_sent: float | None = None
         self._width: float | None = None
-        self._gripper_worker: threading.Thread | None = None
+        self._hand_listener: threading.Thread | None = None
 
     @rpc
     def start(self) -> None:
@@ -241,24 +249,24 @@ class FrankaConnection(ConnectionModule):
             target=self._read_loop, daemon=True, name="FrankaConnection-read"
         )
         self._reader.start()
-        if self._gripper is not None:
-            self._gripper_worker = threading.Thread(
-                target=self._gripper_loop, daemon=True, name="FrankaConnection-hand"
+        if self._hand is not None:
+            self._hand_listener = threading.Thread(
+                target=self._hand_listen, daemon=True, name="FrankaConnection-hand"
             )
-            self._gripper_worker.start()
+            self._hand_listener.start()
 
     @rpc
     def stop(self) -> None:
         self._stop_reading.set()
-        with self._gripper_wake:
-            self._gripper_wake.notify()
-        for thread in (self._reader, self._gripper_worker):
+        if self._hand is not None:
+            self._hand.stop()
+        for thread in (self._reader, self._hand_listener):
             if thread is not None:
                 thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
         super().stop()
         self._end_control()
         self._robot = None
-        self._gripper = None
+        self._hand = None
 
     @rpc
     def clear_errors(self) -> None:
@@ -306,10 +314,14 @@ class FrankaConnection(ConnectionModule):
                 _TORQUE_THRESHOLDS[0], _TORQUE_THRESHOLDS[1], [lower] * 6, [upper] * 6
             )
             if self.config.hand:
-                self._gripper = self._libfranka.Gripper(ip)
-                self._width = float(self._gripper.read_once().width)
+                self._hand = _HandWorker(
+                    ip, self.config.grasp_force, self._libfranka, self.config.hand_process
+                )
+                self._width = self._hand.first_width()
         except Exception:
-            self._robot = self._gripper = None
+            if self._hand is not None:
+                self._hand.stop()
+            self._robot = self._hand = None
             raise
         # No control session yet: the first joint target starts one.
         if state.robot_mode.name in ("Reflex", "UserStopped"):
@@ -352,9 +364,8 @@ class FrankaConnection(ConnectionModule):
                 self._finger_sent is None or abs(finger - self._finger_sent) > _GRIPPER_DEADBAND
             ):
                 logger.info(f"FrankaConnection: finger target {finger * 1000:.1f} mm received")
-                with self._gripper_wake:
-                    self._gripper_goal = 2.0 * finger  # both fingers move: width is twice one
-                    self._gripper_wake.notify()
+                if self._hand is not None:
+                    self._hand.goals.put(2.0 * finger)  # both fingers move: width is twice one
                 self._finger_sent = finger
 
     def halt(self) -> None:
@@ -557,52 +568,148 @@ class FrankaConnection(ConnectionModule):
                 self._report(f"reading failed: {type(error).__name__}: {error}")
             count += 1
 
-    def _gripper_loop(self) -> None:
-        sent: float | None = None
-        while not self._stop_reading.is_set():
-            with self._gripper_wake:
-                self._gripper_wake.wait(timeout=1.0 / _READ_HZ * _GRIPPER_READ_EVERY)
-                goal = self._gripper_goal
-            gripper = self._gripper
-            if gripper is None:
-                continue
+    def _hand_listen(self) -> None:
+        hand = self._hand
+        while hand is not None and not self._stop_reading.is_set():
             try:
-                if goal is not None and goal != sent:
-                    sent = goal
-                    hand = gripper.read_once()
-                    width = max(0.0, min(float(hand.max_width), goal))
-                    closing = width < float(hand.width) - _GRASP_MIN_CLOSE
-                    logger.info(
-                        f"FrankaConnection: Hand to {width * 1000:.1f} mm "
-                        f"({'grasp' if closing else 'move'}), "
-                        f"now {float(hand.width) * 1000:.1f} mm"
+                kind, value = hand.events.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            except (EOFError, OSError):
+                return
+            if kind == "width":
+                self._width = float(value)
+            elif kind == "info":
+                logger.info(f"FrankaConnection: {value}")
+            else:
+                self._report(str(value))
+
+
+class _HandWorker:
+    """The Franka Hand, worked from a queue of widths by a process or a thread.
+
+    pylibfranka's Gripper calls hold the GIL while the fingers move, so on
+    hardware the Gripper lives in a process of its own; tests on a fake
+    pylibfranka use a thread. Readings and messages come back on ``events``.
+    """
+
+    def __init__(self, ip: str, grasp_force: float, libfranka: Any, in_process: bool) -> None:
+        if in_process:
+            ctx = multiprocessing.get_context("spawn")
+            self.goals: Any = ctx.Queue()
+            self.events: Any = ctx.Queue()
+            self._stop: Any = ctx.Event()
+            self._runner: Any = ctx.Process(
+                target=_hand_process_main,
+                args=(ip, grasp_force, self.goals, self.events, self._stop),
+                daemon=True,
+                name="FrankaConnection-hand",
+            )
+        else:
+            self.goals = queue.Queue()
+            self.events = queue.Queue()
+            self._stop = threading.Event()
+            first = libfranka.Gripper(ip)  # opened here, so a failure fails connect()
+
+            def open_gripper(made: list[Any] = [first]) -> Any:  # noqa: B006
+                return made.pop() if made else libfranka.Gripper(ip)
+
+            self._runner = threading.Thread(
+                target=_hand_loop,
+                args=(open_gripper, grasp_force, self.goals, self.events, self._stop),
+                daemon=True,
+                name="FrankaConnection-hand",
+            )
+        self._runner.start()
+
+    def first_width(self, timeout: float = 15.0) -> float:
+        """The Hand's opening (m) once it answers; raises if it does not."""
+        try:
+            kind, value = self.events.get(timeout=timeout)
+        except queue.Empty as error:
+            raise ConnectionError("the Franka Hand did not answer") from error
+        if kind != "width":
+            raise ConnectionError(f"the Franka Hand did not answer: {value}")
+        return float(value)
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._runner.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
+        if (
+            isinstance(self._runner, multiprocessing.process.BaseProcess)
+            and self._runner.is_alive()
+        ):
+            self._runner.terminate()
+
+
+def _hand_process_main(ip: str, grasp_force: float, goals: Any, events: Any, stop: Any) -> None:
+    """The Hand's process: its own pylibfranka, its own GIL."""
+    libfranka = _import_libfranka()
+    _hand_loop(lambda: libfranka.Gripper(ip), grasp_force, goals, events, stop)
+
+
+def _hand_loop(
+    open_gripper: Callable[[], Any], grasp_force: float, goals: Any, events: Any, stop: Any
+) -> None:
+    """Take widths off ``goals`` and move the Hand there, the latest first; report its
+    opening on ``events`` every 0.1 s, and anything that goes wrong."""
+    try:
+        gripper = open_gripper()
+        events.put(("width", float(gripper.read_once().width)))
+    except Exception as error:
+        events.put(("error", f"Franka Hand failed: {type(error).__name__}: {error}"))
+        return
+    wanted: float | None = None  # the latest width asked for, kept to resend after a reconnect
+    sent: float | None = None
+    while not stop.is_set():
+        try:
+            wanted = goals.get(timeout=1.0 / _READ_HZ * _GRIPPER_READ_EVERY)
+            while True:  # only the newest goal matters
+                wanted = goals.get_nowait()
+        except queue.Empty:
+            pass
+        except (EOFError, OSError):
+            return
+        goal = wanted
+        try:
+            if goal is not None and goal != sent:
+                sent = goal
+                hand = gripper.read_once()
+                width = max(0.0, min(float(hand.max_width), goal))
+                closing = width < float(hand.width) - _GRASP_MIN_CLOSE
+                events.put(
+                    (
+                        "info",
+                        f"Hand to {width * 1000:.1f} mm ({'grasp' if closing else 'move'}), "
+                        f"now {float(hand.width) * 1000:.1f} mm",
                     )
-                    if closing:
-                        # grasp() holds what is between the fingers with a force,
-                        # where move() would fail once they are blocked. Epsilons
-                        # of the full stroke accept any width it stops at.
-                        gripper.grasp(
-                            width,
-                            _GRIPPER_SPEED,
-                            self.config.grasp_force,
-                            epsilon_inner=float(hand.max_width),
-                            epsilon_outer=float(hand.max_width),
-                        )
-                    else:
-                        gripper.move(width, _GRIPPER_SPEED)
-                self._width = float(gripper.read_once().width)
-            except Exception as error:
-                self._report(f"Franka Hand failed: {type(error).__name__}: {error}")
-                # A dropped link (another client connecting to the Hand, a cable
-                # blip) leaves this Gripper dead: open a fresh one and resend.
-                if "Net" in str(error) or "Network" in type(error).__name__:
-                    try:
-                        self._gripper = self._libfranka.Gripper(self.config.ip)
-                        sent = None
-                        logger.info("FrankaConnection: reconnected to the Franka Hand")
-                    except Exception as again:
-                        self._report(f"Franka Hand reconnect failed: {again}")
-                        self._stop_reading.wait(1.0)
+                )
+                if closing:
+                    # grasp() holds what is between the fingers with a force, where
+                    # move() would fail once they are blocked. Epsilons of the full
+                    # stroke accept any width it stops at.
+                    gripper.grasp(
+                        width,
+                        _GRIPPER_SPEED,
+                        grasp_force,
+                        epsilon_inner=float(hand.max_width),
+                        epsilon_outer=float(hand.max_width),
+                    )
+                else:
+                    gripper.move(width, _GRIPPER_SPEED)
+            events.put(("width", float(gripper.read_once().width)))
+        except Exception as error:
+            events.put(("error", f"Franka Hand failed: {type(error).__name__}: {error}"))
+            # A dropped link (another client connecting to the Hand, a cable blip)
+            # leaves this Gripper dead: open a fresh one and resend.
+            if "Net" in str(error) or "Network" in type(error).__name__:
+                try:
+                    gripper = open_gripper()
+                    sent = None
+                    events.put(("info", "reconnected to the Franka Hand"))
+                except Exception as again:
+                    events.put(("error", f"Franka Hand reconnect failed: {again}"))
+                    stop.wait(1.0)
 
 
 def _import_libfranka() -> Any:

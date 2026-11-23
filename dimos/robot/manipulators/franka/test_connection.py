@@ -278,6 +278,8 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..
         config.setdefault("ip", IP)
         config.setdefault("deadman_timeout_s", DEADMAN_S)
         config.setdefault("model", fr3_like_model(tmp_path))
+        # The fake pylibfranka lives in this process; on hardware the Hand gets its own.
+        config.setdefault("hand_process", False)
         made.append(Rig(FrankaConnection(**config), fake))
         if start:
             made[-1].module.start()

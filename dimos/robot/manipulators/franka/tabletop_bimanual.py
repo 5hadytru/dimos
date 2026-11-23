@@ -54,14 +54,15 @@ SIDES = ("right", "left")
 TABLETOP_ROOT_LINK = "tabletop"
 
 #: Where the left arm's base sits in the right arm's base frame: metres, and roll,
-#: pitch, yaw (extrinsic xyz, rad). From both wrist cameras viewing two boards taped
-#: to the table (bimanual_cal.py): the two boards agree to 10 mm and 1.3 deg, and the
-#: left arm, sent 5 cm above a board corner that only the right arm had measured,
-#: landed centred on it and within about 1 mm of height. The 2.7 deg roll and 2 cm
-#: rise are measured but not physically explained (the table is level and both
-#: bases sit flat); expect up to ~1 cm of error far from the shared middle.
-LEFT_BASE_XYZ = (0.1573, 0.7551, 0.0228)
-LEFT_BASE_RPY = (0.04673, 0.00719, -0.38704)
+#: pitch, yaw (extrinsic xyz, rad). Both bases sit flat on one level table, so the
+#: offset is planar: x, y and a turn about the vertical. Fitted to every corner of two
+#: ChArUco boards taped to the table as both wrist cameras saw them (bimanual_cal.py):
+#: 4.3 mm RMS, 5.7 mm worst. The left arm, sent 5 cm above a board corner that only
+#: the right arm had measured, landed centred on it and within about 1 mm of height.
+#: Each arm sees the flat table tilted by 2 to 3 deg in its own frame, so heights far
+#: from a base carry about a centimetre of error; perception fits the tabletop itself.
+LEFT_BASE_XYZ = (0.1597, 0.7579, 0.0)
+LEFT_BASE_RPY = (0.0, 0.0, -0.39176)
 
 #: The ready pose for both arms, right then left.
 TABLETOP_BIMANUAL_READY = [*FR3_READY, *FR3_READY]
