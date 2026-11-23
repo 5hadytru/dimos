@@ -18,8 +18,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import ipaddress
-import multiprocessing
+import json
 import queue
+import subprocess
+import sys
 import threading
 import time
 from typing import Any
@@ -121,7 +123,8 @@ class FrankaConfig(ConnectionConfig):
         enforce_realtime: Make libfranka refuse to run without a real-time
             kernel. Off by default: the async position control used here plans
             on the robot, and Franka's own example for it runs without one.
-        hand_process: Drive the Hand from a process of its own. pylibfranka's
+        hand_process: Drive the Hand from a program of its own
+            (``franka.hand_process``). pylibfranka's
             Gripper calls hold Python's GIL for as long as the fingers move
             (about a second), which stops the arm's reading thread for that
             long: joint targets are then refused as stale and a running control
@@ -595,17 +598,30 @@ class _HandWorker:
 
     def __init__(self, ip: str, grasp_force: float, libfranka: Any, in_process: bool) -> None:
         if in_process:
-            ctx = multiprocessing.get_context("spawn")
-            self.goals: Any = ctx.Queue()
-            self.events: Any = ctx.Queue()
-            self._stop: Any = ctx.Event()
-            self._runner: Any = ctx.Process(
-                target=_hand_process_main,
-                args=(ip, grasp_force, self.goals, self.events, self._stop),
+            self._proc: subprocess.Popen[str] | None = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "dimos.robot.manipulators.franka.hand_process",
+                    ip,
+                    str(grasp_force),
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            self.goals: Any = _Pipe(self._proc)
+            self.events: queue.Queue[Any] = queue.Queue()
+            self._stop = threading.Event()
+            self._runner = threading.Thread(
+                target=_relay_lines,
+                args=(self._proc, self.events),
                 daemon=True,
                 name="FrankaConnection-hand",
             )
         else:
+            self._proc = None
             self.goals = queue.Queue()
             self.events = queue.Queue()
             self._stop = threading.Event()
@@ -634,18 +650,42 @@ class _HandWorker:
 
     def stop(self) -> None:
         self._stop.set()
+        if self._proc is not None:
+            try:
+                assert self._proc.stdin is not None
+                self._proc.stdin.close()  # the Hand's program stops at the end of its input
+                self._proc.wait(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
+            except (OSError, subprocess.TimeoutExpired):
+                self._proc.kill()
         self._runner.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
-        if (
-            isinstance(self._runner, multiprocessing.process.BaseProcess)
-            and self._runner.is_alive()
-        ):
-            self._runner.terminate()
 
 
-def _hand_process_main(ip: str, grasp_force: float, goals: Any, events: Any, stop: Any) -> None:
-    """The Hand's process: its own pylibfranka, its own GIL."""
-    libfranka = _import_libfranka()
-    _hand_loop(lambda: libfranka.Gripper(ip), grasp_force, goals, events, stop)
+class _Pipe:
+    """``put`` sends one width to the Hand's program."""
+
+    def __init__(self, proc: subprocess.Popen[str]) -> None:
+        self._proc = proc
+
+    def put(self, width: float) -> None:
+        try:
+            assert self._proc.stdin is not None
+            self._proc.stdin.write(json.dumps(width) + "\n")
+            self._proc.stdin.flush()
+        except (OSError, ValueError):
+            pass  # it has stopped; the listener reports why
+
+
+def _relay_lines(proc: subprocess.Popen[str], events: queue.Queue[Any]) -> None:
+    """Pass the Hand program's readings on, and say so if it stops."""
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        try:
+            kind, value = json.loads(line)
+        except ValueError:
+            continue
+        events.put((kind, value))
+    if proc.poll() not in (None, 0):
+        events.put(("error", f"the Franka Hand's process stopped (exit {proc.returncode})"))
 
 
 def _hand_loop(
