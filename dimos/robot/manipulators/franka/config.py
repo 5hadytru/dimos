@@ -79,17 +79,19 @@ FR3_HEURISTIC_AIM = {
 def fr3_wrist_camera_transform() -> Transform:
     """Where the wrist RealSense D435i sits on the Franka Hand: fr3_hand -> camera_link.
 
-    Hand-eye calibrated on Dimensional's FR3 (2026-11-21): 15 views of a ChArUco
-    board (8x5, 30 mm squares), closed-form solve then bundle adjustment over
-    all 409 corners; 0.79 px reprojection RMS, about 0.6 mm and 0.08 deg 1-sigma.
+    Hand-eye calibrated on Dimensional's first FR3 (2026-11-22, after its camera
+    cable was re-taped and the camera shifted 5 mm and 1 deg): 15 views of a
+    ChArUco board (8x5, 30 mm squares), closed-form solve then bundle adjustment
+    over all 420 corners; 0.59 px reprojection RMS, about 0.5 mm and 0.05 deg
+    1-sigma. The same as the "right" arm's in ``tabletop_bimanual``.
     camera_link is RealSense's body frame on the depth imager (x out of the
     lens, y to the camera's left, z up), as dimOS's RealSense module places it.
     The camera looks down the hand's +z with its long side along the hand's y.
     Recalibrate if the camera or its mount is moved.
     """
     return Transform(
-        translation=Vector3(x=0.0546, y=-0.0208, z=0.0662),
-        rotation=Quaternion(0.718183, -0.008415, 0.695761, 0.007679),  # xyzw
+        translation=Vector3(x=0.0531, y=-0.0161, z=0.0656),
+        rotation=Quaternion(0.715223, -0.016805, 0.698639, 0.008832),  # xyzw
         frame_id=f"{FR3_PREFIX}hand",
         child_frame_id="camera_link",
     )

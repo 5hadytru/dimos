@@ -64,7 +64,9 @@ is Franka's ready pose.
   the scaled speed from the measured position is refused, as is any target
   while the latest reading is older than 0.1 s. If commands stop for
   `deadman_timeout_s`, the arm is held where it is. Collision thresholds are
-  set to Franka's example values (20/40 Nm, 10/20 N).
+  20/40 Nm at the joints and `contact_force` (default 20/40 N) at the tool;
+  the robot's tool-force estimate can read over 10 N with no contact when the
+  arm is folded near its base.
 - **Errors.** A reflex (collision, limit) or a stop from outside dimOS ends the
   control session and faults the connection, with libfranka's error names in
   `status().last_error`. Call `clear_errors()` (libfranka's automatic error
@@ -73,6 +75,46 @@ is Franka's ready pose.
   0.04 m (open) per finger. Closing calls `grasp()` with `grasp_force`
   (default 20 N), which holds an object rather than failing when the fingers
   are blocked; opening calls `move()`.
+
+## Two FR3s clamped to a table
+
+`fr3-tabletop-bimanual` runs two ordinary FR3s whose bases are clamped to the
+same table. It is not Franka's bimanual product or any fixed dual-arm mount:
+each arm has its own control box and FCI address, and where one base sits
+relative to the other is measured on the actual table, not taken from a
+drawing.
+
+```bash
+dimos run fr3-tabletop-bimanual --right_arm.ip 10.42.0.230 --left_arm.ip 10.43.0.53
+```
+
+- **Names.** Seen from behind the arms, looking the way they face, the arms
+  are "right" and "left": joints `right/fr3_joint1` ... and `left/fr3_joint1`
+  ..., Hands `right/fr3_finger_joint1` and `left/fr3_finger_joint1`, planning
+  groups `right`, `left` and `both`. The world frame is the right arm's base.
+- **Placement.** `franka/tabletop_bimanual.py` holds the left base's pose in
+  the right base's frame, each wrist camera's hand-eye calibration, and the
+  scene camera's pose. They were measured with two ChArUco boards taped to the
+  table, seen by both wrist cameras. Re-measure after unclamping or moving a
+  base, moving a wrist camera on its mount, or moving the scene camera.
+- **Keeping the arms apart.** Both arms, and a box standing in for each wrist
+  camera and its bracket, are in one collision world, so every plan is
+  checked against the other arm. Commands that do not come from the planner,
+  such as a policy driving the coordinator, pass through a `SeparationGuard`
+  before reaching either arm. With the other arm at its own latest target, it
+  drops a joint target that would bring
+  - the two grippers (hand and fingers) within `gripper_separation_m` (5 mm)
+    of each other, which lets them meet for a handover at the risk of a light
+    bump, or
+  - anything else (arm links, wrist included, and the wrist cameras) within
+    `arm_separation_m` (5 cm) of the other arm.
+
+  The arm then stops where it is. A target that widens a too-small gap passes,
+  so a stopped arm can be backed out. Face to face over the middle of the
+  table, the grippers can close in until their TCPs are about 3.5 cm apart
+  before a wrist or camera reaches its 5 cm limit.
+- **Cameras.** A RealSense on each wrist and one on a tripod over the table,
+  at 640x480, publish on `right_wrist_*`, `left_wrist_*` and `scene_*` streams.
 
 ## Not supported yet
 
