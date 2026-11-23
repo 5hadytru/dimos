@@ -340,6 +340,9 @@ class FrankaConnection(ConnectionModule):
         if self._fault is not None:
             raise FrankaError(self._fault)
         targets = [values.get(f"{joint}/{Interface.POSITION}") for joint in self._joints]
+        # The Hand first: a refused arm target must not also drop a Hand command (with
+        # the arm held short of an unreachable target, the Hand would never open).
+        self._write_finger(values)
         if any(target is not None for target in targets):
             age = time.monotonic() - self._measured_at
             if age > _READING_MAX_AGE_S:
@@ -360,11 +363,9 @@ class FrankaConnection(ConnectionModule):
                     # Already there (e.g. holding after a finished motion): starting a
                     # session for it would only have the robot end it again.
                     self._target = angles
-                    self._write_finger(values)
                     return
                 self._begin_control()
             self._send_target(angles)
-        self._write_finger(values)
 
     def _write_finger(self, values: Values) -> None:
         if self._finger is not None:
